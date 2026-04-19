@@ -8,6 +8,7 @@ __pycache__/
 /custom_nodes/*
 !custom_nodes/example_node.py.example
 !custom_nodes/ComfyUI-Trellis2/
+custom_nodes/ComfyUI-Trellis2/wheels/
 extra_model_paths.yaml
 /.vs
 .vscode/
