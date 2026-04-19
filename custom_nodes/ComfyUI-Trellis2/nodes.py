@@ -26,6 +26,28 @@ import pymeshlab
 import cumesh as CuMesh
 import o_voxel
 
+# Shims for functions missing from the installed cumesh version
+def _remesh_shim(vertices, faces, resolution, verbose=False, remove_inner_faces=False, **kwargs):
+    aabb_min = vertices.min(dim=0).values
+    aabb_max = vertices.max(dim=0).values
+    center = (aabb_min + aabb_max) / 2
+    scale = (aabb_max - aabb_min).max().item() * 1.1
+    return CuMesh.remeshing.remesh_narrow_band_dc(
+        vertices, faces, center=center, scale=scale, resolution=resolution, verbose=verbose, **{k: v for k, v in kwargs.items() if k not in ('remove_inner_faces',)}
+    )
+
+if not hasattr(CuMesh.remeshing, 'reconstruct_mesh_dc'):
+    CuMesh.remeshing.reconstruct_mesh_dc = _remesh_shim
+if not hasattr(CuMesh.remeshing, 'reconstruct_mesh_dc_quad'):
+    CuMesh.remeshing.reconstruct_mesh_dc_quad = _remesh_shim
+if not hasattr(CuMesh.remeshing, 'remesh_narrow_band_dc_quad'):
+    def _remesh_narrow_band_dc_quad(vertices, faces, center, scale, resolution, band=1, project_back=0, verbose=False, remove_inner_faces=False, bvh=None):
+        return CuMesh.remeshing.remesh_narrow_band_dc(
+            vertices, faces, center=center, scale=scale, resolution=resolution,
+            band=band, project_back=project_back, verbose=verbose, bvh=bvh,
+        )
+    CuMesh.remeshing.remesh_narrow_band_dc_quad = _remesh_narrow_band_dc_quad
+
 import meshlib.mrmeshnumpy as mrmeshnumpy
 import meshlib.mrmeshpy as mrmeshpy
 
@@ -325,12 +347,12 @@ class Trellis2LoadModel:
         return {
             "required": {
                 "modelname": (["microsoft/TRELLIS.2-4B","visualbruno/TRELLIS.2-4B-FP8"],{"default":"microsoft/TRELLIS.2-4B"}),
-                "backend": (["flash_attn","xformers","sdpa","flash_attn_3"],{"default":"flash_attn"}),
+                "backend": (["sdpa","flash_attn","xformers","flash_attn_3"],{"default":"sdpa"}),
                 "device": (["cpu","cuda"],{"default":"cuda"}),
                 "low_vram": ("BOOLEAN",{"default":True}),
                 "keep_models_loaded": ("BOOLEAN", {"default":True}),
                 "conv_backend": (["spconv","torchsparse","flex_gemm"],{"default":"flex_gemm"}),
-                "sparse_backend": (["xformers","flash_attn"],{"default":"flash_attn"}),
+                "sparse_backend": (["sdpa","xformers","flash_attn"],{"default":"sdpa"}),
                 "use_reconviagen": ("BOOLEAN",{"default":False}),
             },
         }

@@ -60,6 +60,8 @@ def calc_window_partition(
             'cu_seqlens': torch.cat([torch.tensor([0], device=tensor.device), torch.cumsum(seq_lens, dim=0)], dim=0).int(),
             'max_seqlen': torch.max(seq_lens)
         }
+    else:
+        attn_func_args = {'seq_lens': seq_lens}
 
     return fwd_indices, bwd_indices, seq_lens, attn_func_args
     
@@ -113,6 +115,20 @@ def sparse_windowed_scaled_dot_product_self_attention(
         if 'flash_attn' not in globals():
             import flash_attn
         out = flash_attn.flash_attn_varlen_qkvpacked_func(qkv_feats, **attn_func_args)  # [M, H, C]
+    else:
+        from torch.nn.functional import scaled_dot_product_attention as torch_sdpa
+        q, k, v = qkv_feats.unbind(dim=1)  # [M, H, C]
+        outputs = []
+        start = 0
+        for seq_len in attn_func_args['seq_lens']:
+            n = seq_len.item()
+            q_w = q[start:start+n].permute(1, 0, 2).unsqueeze(0)  # [1, H, n, C]
+            k_w = k[start:start+n].permute(1, 0, 2).unsqueeze(0)
+            v_w = v[start:start+n].permute(1, 0, 2).unsqueeze(0)
+            out_w = torch_sdpa(q_w, k_w, v_w).squeeze(0).permute(1, 0, 2)  # [n, H, C]
+            outputs.append(out_w)
+            start += n
+        out = torch.cat(outputs, dim=0)  # [M, H, C]
 
     out = out[bwd_indices]      # [T, H, C]
 
@@ -172,11 +188,11 @@ def sparse_windowed_scaled_dot_product_cross_attention(
         if 'xops' not in globals():
             import xformers.ops as xops
         k, v = kv_feats.unbind(dim=1)                                                   # [M, H, C]
-        q = q.unsqueeze(0)                                                              # [1, M, H, C]
+        q_feats_u = q_feats.unsqueeze(0)                                                # [1, M, H, C]
         k = k.unsqueeze(0)                                                              # [1, M, H, C]
         v = v.unsqueeze(0)                                                              # [1, M, H, C]
         mask = xops.fmha.BlockDiagonalMask.from_seqlens(q_seq_lens, kv_seq_lens)
-        out = xops.memory_efficient_attention(q, k, v, attn_bias=mask)[0]               # [M, H, C]
+        out = xops.memory_efficient_attention(q_feats_u, k, v, attn_bias=mask)[0]      # [M, H, C]
     elif config.ATTN == 'flash_attn':
         if 'flash_attn' not in globals():
             import flash_attn
@@ -184,6 +200,22 @@ def sparse_windowed_scaled_dot_product_cross_attention(
             cu_seqlens_q=q_attn_func_args['cu_seqlens'], cu_seqlens_k=kv_attn_func_args['cu_seqlens'],
             max_seqlen_q=q_attn_func_args['max_seqlen'], max_seqlen_k=kv_attn_func_args['max_seqlen'],
         )  # [M, H, C]
+    else:
+        from torch.nn.functional import scaled_dot_product_attention as torch_sdpa
+        k_feats, v_feats = kv_feats.unbind(dim=1)  # [M, H, C]
+        outputs = []
+        q_start = 0
+        kv_start = 0
+        for q_len, kv_len in zip(q_attn_func_args['seq_lens'], kv_attn_func_args['seq_lens']):
+            qn, kn = q_len.item(), kv_len.item()
+            q_w = q_feats[q_start:q_start+qn].permute(1, 0, 2).unsqueeze(0)    # [1, H, qn, C]
+            k_w = k_feats[kv_start:kv_start+kn].permute(1, 0, 2).unsqueeze(0)  # [1, H, kn, C]
+            v_w = v_feats[kv_start:kv_start+kn].permute(1, 0, 2).unsqueeze(0)
+            out_w = torch_sdpa(q_w, k_w, v_w).squeeze(0).permute(1, 0, 2)      # [qn, H, C]
+            outputs.append(out_w)
+            q_start += qn
+            kv_start += kn
+        out = torch.cat(outputs, dim=0)  # [M, H, C]
 
     out = out[q_bwd_indices]      # [T, H, C]
 

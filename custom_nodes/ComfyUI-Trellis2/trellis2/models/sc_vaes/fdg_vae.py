@@ -18,7 +18,12 @@ from .sparse_unet_vae import (
     chunked_apply,
 )
 from ...representations import Mesh
-from o_voxel.convert import flexible_dual_grid_to_mesh, tiled_flexible_dual_grid_to_mesh
+from o_voxel.convert import flexible_dual_grid_to_mesh
+try:
+    from o_voxel.convert import tiled_flexible_dual_grid_to_mesh
+except ImportError:
+    def tiled_flexible_dual_grid_to_mesh(coords, dual_vertices, intersected_flag, split_weight, aabb, grid_size, tile_size=128, train=False):
+        return flexible_dual_grid_to_mesh(coords=coords, dual_vertices=dual_vertices, intersected_flag=intersected_flag, split_weight=split_weight, aabb=aabb, grid_size=grid_size, train=train)
 
 
 class FlexiDualGridVaeEncoder(SparseUnetVaeEncoder):
