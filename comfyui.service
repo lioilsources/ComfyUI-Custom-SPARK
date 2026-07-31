@@ -1,0 +1,18 @@
+[Unit]
+Description=ComfyUI (DGX Spark, GB10)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ol1n
+Group=ol1n
+WorkingDirectory=/home/ol1n/Code/ComfyUI
+ExecStart=/home/ol1n/Code/ComfyUI/run.sh
+Restart=on-failure
+RestartSec=5
+# polštář VRAM lze přepsat:
+# Environment=RESERVE_VRAM=8
+
+[Install]
+WantedBy=multi-user.target
