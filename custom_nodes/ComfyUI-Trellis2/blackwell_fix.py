@@ -299,7 +299,7 @@ def voxel_coords_to_mesh(
     pad_c = 3
     vol_c = np.pad(vol_c.astype(np.uint8), pad_c, mode='constant', constant_values=0)
     vol_c = ndimage.binary_fill_holes(vol_c)
-    vol_c = ndimage.binary_erosion(vol_c, struct26, iterations=4)
+    vol_c = ndimage.binary_erosion(vol_c, struct26, iterations=5)
     vol_c = vol_c[pad_c:-pad_c, pad_c:-pad_c, pad_c:-pad_c]
     log(f"Coarse interior: {int(vol_c.sum()):,} voxels")
 
@@ -316,10 +316,11 @@ def voxel_coords_to_mesh(
     del c_shifted, coords_np
     gc.collect()
     surface = int(vol.sum())
+    shell = vol.copy()  # jemny povrch — chranime ho pred orezem vnitrku
 
     # Upscale coarse interior to fine resolution
     log("Upscaling coarse interior...")
-    interior_up = zoom(vol_c.astype(np.float32), ds_c, order=3) > 0.3
+    interior_up = zoom(vol_c.astype(np.float32), ds_c, order=3) > 0.5
     del vol_c
     gc.collect()
 
@@ -332,6 +333,27 @@ def voxel_coords_to_mesh(
     slices = tuple(slice(pad_f, pad_f + interior_up.shape[d]) for d in range(3))
     vol[slices] |= interior_up.astype(np.uint8)
     del interior_up
+    gc.collect()
+    log("Filling enclosed pockets between shell and interior...")
+    vol = ndimage.binary_fill_holes(vol)
+    # Hruby vnitrek kvantizaci prevysuje jemnou skorapku v sirokych terasach
+    # (az ~pul hrube bunky). Odloupneme od vzduchu max 3 vrstvy odhaleneho
+    # vnitrku; skorapka je neprupustna, takze jemny detail zustane a pripadnou
+    # dirou ve skorapce to zajede jen 3 voxely (zadne vyduteni). 6-konektivita,
+    # aby flood neprosel diagonalou skrz 1-voxelovou stenu.
+    peel_depth = int(ds_c) + 1
+    log(f"Peeling coarse-terrace protrusions (depth {peel_depth}, shell-protected)...")
+    struct6 = ndimage.generate_binary_structure(3, 1)
+    shell_b = shell.astype(bool)
+    del shell
+    peelable = vol & ~shell_b
+    peel = ~vol
+    for _ in range(peel_depth):
+        peel = ndimage.binary_dilation(peel, struct6) & (peel | peelable)
+    vol &= ~peel
+    vol |= shell_b
+    del peelable, peel, shell_b
+    vol = ndimage.binary_fill_holes(vol).astype(np.uint8)
     gc.collect()
     total = int(vol.sum())
     log(f"Surface: {surface:,} voxels, with interior: {total:,}")
