@@ -718,8 +718,11 @@ class ModelPatcher:
 
     def unpin_weight(self, key):
         if key in self.pinned:
-            weight, set_func, convert_func = get_key_weight(self.model, key)
-            comfy.model_management.unpin_memory(weight)
+            try:
+                weight, set_func, convert_func = get_key_weight(self.model, key)
+                comfy.model_management.unpin_memory(weight)
+            except AttributeError:
+                pass  # model structure changed by custom node (e.g. AnimateDiff injection)
             self.pinned.remove(key)
 
     def unpin_all_weights(self):
