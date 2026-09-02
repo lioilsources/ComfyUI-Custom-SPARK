@@ -1,4 +1,6 @@
-"""AddPrintBase — přidá tisknutelnou podstavu pod vygenerovaný mesh.
+"""Mesh nody pro tisk: AddPrintBase (podstava) a SealMeshTunnels (tunely).
+
+AddPrintBase — přidá tisknutelnou podstavu pod vygenerovaný mesh.
 
 Trellis z jednoho pohledu podstavu často zahodí (plochý disk pod postavou je
 z frontálního záběru nejednoznačný), a i když ji vygeneruje, nemá kontrolu nad
@@ -124,5 +126,114 @@ class AddPrintBase:
         return (out,)
 
 
-NODE_CLASS_MAPPINGS = {"AddPrintBase": AddPrintBase}
-NODE_DISPLAY_NAME_MAPPINGS = {"AddPrintBase": "Add Print Base (podstava)"}
+class SealMeshTunnels:
+    """Zavře tunely v meshi CGAL alpha wrappingem.
+
+    Trellis z jednoho pohledu domýšlí odvrácenou stranu a přitom model
+    „prokopne" — vzniknou průchody skrz tělo. Mesh přitom zůstane watertight
+    a bez otevřených hran, takže ho `fill_holes` ani kontrola watertight
+    nezachytí: vada je topologická (rod), ne díra v povrchu. Naměřeno
+    2. 9. 2026 na figurce: watertight True, 0 otevřených hran, ale **rod 23**.
+
+    Alpha wrapping objede model zvenčí koulí o poloměru `alpha` a vytvoří
+    nový obal. Co je užší než koule (tenký tunel), se zavře; tvar a detaily
+    zůstanou. Na téže figurce: rod 23 → 9 při zachování 222k trojúhelníků,
+    zatímco morfologické uzavření dalo sice rod 7, ale rozmazalo obličej.
+
+    Nezavře velké průchody — ty jsou buď legitimní (mezera mezi pažemi), nebo
+    je model zkrátka vymyslel a žádný post-processing chybějící část
+    nedomyslí; tam pomůže jen lepší vstupní fotka (zepředu: rod 7 místo 23).
+
+    Pouští se PŘED AddPrintBase, aby se neobalovala podstava.
+    """
+
+    CATEGORY = "mesh/print"
+    RETURN_TYPES = ("TRIMESH",)
+    RETURN_NAMES = ("trimesh",)
+    FUNCTION = "process"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "trimesh": ("TRIMESH",),
+                # % z úhlopříčky bboxu; níž = jemnější detail, ale víc tunelů přežije
+                "alpha": ("FLOAT", {"default": 0.3, "min": 0.05, "max": 5.0, "step": 0.05}),
+                "offset": ("FLOAT", {"default": 0.3, "min": 0.01, "max": 2.0, "step": 0.01}),
+                "enabled": ("BOOLEAN", {"default": True}),
+            }
+        }
+
+    @staticmethod
+    def _genus(m):
+        try:
+            return (2 - int(m.euler_number)) // 2
+        except Exception:
+            return None
+
+    def process(self, trimesh_input=None, **kw):
+        # `trimesh` je zároveň jméno modulu, takže stejná obezlička jako výš
+        import tempfile, os
+        mesh = kw.pop("trimesh", trimesh_input)
+        alpha, offset, enabled = kw.get("alpha", 0.3), kw.get("offset", 0.3), kw.get("enabled", True)
+        before = self._genus(mesh)
+        if not enabled:
+            print(f"[SealMeshTunnels] vypnuto (rod={before})")
+            return (mesh,)
+        try:
+            import pymeshlab
+        except ImportError:
+            print("[SealMeshTunnels] pymeshlab chybí, vracím mesh beze změny")
+            return (mesh,)
+
+        tmp = tempfile.mkdtemp(prefix="sealtunnels_")
+        src, dst = os.path.join(tmp, "in.ply"), os.path.join(tmp, "out.ply")
+        try:
+            mesh.export(src)
+            ms = pymeshlab.MeshSet()
+            ms.load_new_mesh(src)
+            ms.generate_alpha_wrap(alpha=pymeshlab.PercentageValue(alpha),
+                                   offset=pymeshlab.PercentageValue(offset))
+            ms.save_current_mesh(dst)
+            out = trimesh.load(dst, force="mesh")
+        except Exception as e:                                  # noqa: BLE001
+            print(f"[SealMeshTunnels] alpha wrap selhal ({e}); vracím originál")
+            return (mesh,)
+        finally:
+            for f in (src, dst):
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+            try:
+                os.rmdir(tmp)
+            except OSError:
+                pass
+
+        if out is None or out.is_empty:
+            print("[SealMeshTunnels] výsledek prázdný, vracím originál")
+            return (mesh,)
+        # Příliš velká alpha model „obalí“ do beztvarého pytle: koule se přestane
+        # vejít do detailů a zůstane hrubá skořápka (alpha 5 % dalo z 297k ploch
+        # 1398). Pod pětinu původní hustoty už to není opravený model.
+        if len(out.faces) < 0.2 * len(mesh.faces):
+            print(f"[SealMeshTunnels] alpha {alpha} je na tenhle mesh příliš hrubá "
+                  f"({len(mesh.faces)} → {len(out.faces)} faces), vracím originál")
+            return (mesh,)
+        # Alpha wrap pracuje v jednotkách vstupu, takže měřítko musí sedět;
+        # kdyby se rozešlo, radši originál než mikroskopická figurka.
+        ratio = out.extents.max() / max(mesh.extents.max(), 1e-9)
+        if not 0.8 <= ratio <= 1.25:
+            print(f"[SealMeshTunnels] měřítko ujelo ({ratio:.2f}×), vracím originál")
+            return (mesh,)
+        print(f"[SealMeshTunnels] rod {before} → {self._genus(out)} | "
+              f"faces {len(mesh.faces)} → {len(out.faces)} | "
+              f"watertight={out.is_watertight}")
+        return (out,)
+
+
+NODE_CLASS_MAPPINGS = {"AddPrintBase": AddPrintBase, "SealMeshTunnels": SealMeshTunnels}
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "AddPrintBase": "Add Print Base (podstava)",
+    "SealMeshTunnels": "Seal Mesh Tunnels (alpha wrap)",
+}
